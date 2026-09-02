@@ -4,4 +4,5 @@ __pycache__/
 venv/
 all-providers.csv
 no-website-leads.csv
-*.html
+# cached page fetches (fixtures like page37.html are intentionally NOT ignored)
+pages_cache/
