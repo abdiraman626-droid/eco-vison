@@ -46,9 +46,15 @@ from bs4 import BeautifulSoup, Tag
 
 BASE_URL = (
     "https://mn.gov/adresources/search/"
-    "?query=LT-2800.3000&query_label=Home+Health+Aide+Services"
+    "?query={taxonomy}&query_label={label}"
     "&query_type=taxonomy&page={page}"
 )
+
+# Vertical #1, the one whose parse is under test. Others use the same markup,
+# so a new taxonomy code is a new lead list with no new parsing code. Find codes
+# in the directory's own category links -- never guess one.
+DEFAULT_TAXONOMY = "LT-2800.3000"
+DEFAULT_LABEL = "Home Health Aide Services"
 
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -61,8 +67,8 @@ SLEEP_SECONDS = 1.0
 MAX_ATTEMPTS = 3
 TIMEOUT = 30
 
-ALL_CSV = "all-providers.csv"
-LEADS_CSV = "no-website-leads.csv"
+ALL_CSV = "{slug}-all.csv"
+LEADS_CSV = "{slug}-no-website-leads.csv"
 
 FIELDNAMES = [
     "name",
@@ -113,12 +119,11 @@ def make_session() -> requests.Session:
     return session
 
 
-def fetch_page(session: requests.Session, page: int) -> str | None:
+def fetch_page(session: requests.Session, url: str, page: int) -> str | None:
     """GET one results page. Retry up to MAX_ATTEMPTS with backoff.
 
     Returns the HTML, or None if every attempt failed (logged, never raised).
     """
-    url = BASE_URL.format(page=page)
     for attempt in range(1, MAX_ATTEMPTS + 1):
         try:
             response = session.get(url, timeout=TIMEOUT)
@@ -143,6 +148,11 @@ def fetch_page(session: requests.Session, page: int) -> str | None:
 
 def _norm(text: str) -> str:
     return re.sub(r"\s+", " ", text or "").strip()
+
+
+def slugify(text: str) -> str:
+    """'Home Health Aide Services' -> 'home-health-aide-services'."""
+    return re.sub(r"-+", "-", re.sub(r"[^a-z0-9]+", "-", text.lower())).strip("-")
 
 
 def _detail_anchors(soup: BeautifulSoup) -> list[Tag]:
@@ -363,6 +373,19 @@ def main(argv: list[str] | None = None) -> int:
         help="Parse saved HTML instead of fetching (repeatable). Offline test mode.",
     )
     parser.add_argument("--page-label", default="?", help="Page number for --from-file logs.")
+    parser.add_argument(
+        "--taxonomy", default=DEFAULT_TAXONOMY,
+        help=f"Directory taxonomy code, e.g. {DEFAULT_TAXONOMY}. One code = one vertical.",
+    )
+    parser.add_argument(
+        "--label", default=DEFAULT_LABEL,
+        help="Human label for the taxonomy. Names the output files.",
+    )
+    parser.add_argument(
+        "--last-page", type=int, default=LAST_PAGE,
+        help=f"Highest page to try (default {LAST_PAGE}). Page counts differ per vertical; "
+             "the run stops early on the first page that returns zero providers.",
+    )
     parser.add_argument("--out-dir", default=".", help="Where to write the CSVs.")
     parser.add_argument("--no-csv", action="store_true", help="Print only, write nothing.")
     parser.add_argument("--verbose", action="store_true")
@@ -385,19 +408,25 @@ def main(argv: list[str] | None = None) -> int:
             log.info("%s -> %s providers", path, len(found))
             raw.extend(found)
     else:
-        pages = parse_page_spec(args.pages)
+        pages = parse_page_spec(args.pages, args.last_page)
+        label = requests.compat.quote_plus(args.label)
         session = make_session()
+        log.info("vertical: %s (%s)", args.label, args.taxonomy)
         for index, page in enumerate(pages):
+            url = BASE_URL.format(taxonomy=args.taxonomy, label=label, page=page)
             log.info("fetching page %s/%s ...", page, pages[-1])
-            html = fetch_page(session, page)
+            html = fetch_page(session, url, page)
             if html is None:
                 failed.append(page)
             else:
                 found = parse_page(html, page)
                 log.info("page %s -> %s providers", page, len(found))
-                if not found:
-                    log.warning("page %s parsed to ZERO providers -- check markup", page)
                 raw.extend(found)
+                # Page counts differ per vertical, so an empty page is the end
+                # of results -- not an error, as long as the fetch succeeded.
+                if not found and len(pages) > 1:
+                    log.info("page %s returned no providers -- stopping here", page)
+                    break
             if index < len(pages) - 1:
                 time.sleep(SLEEP_SECONDS)  # be polite
 
@@ -412,8 +441,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if not args.no_csv:
         os.makedirs(args.out_dir, exist_ok=True)
-        all_path = os.path.join(args.out_dir, ALL_CSV)
-        leads_path = os.path.join(args.out_dir, LEADS_CSV)
+        slug = slugify(args.label)
+        all_path = os.path.join(args.out_dir, ALL_CSV.format(slug=slug))
+        leads_path = os.path.join(args.out_dir, LEADS_CSV.format(slug=slug))
         log.info("wrote %s rows -> %s", write_csv(all_path, providers), all_path)
         log.info("wrote %s rows -> %s", write_csv(leads_path, leads), leads_path)
 
@@ -421,9 +451,9 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-def parse_page_spec(spec: str | None) -> list[int]:
+def parse_page_spec(spec: str | None, last_page: int = LAST_PAGE) -> list[int]:
     if not spec:
-        return list(range(FIRST_PAGE, LAST_PAGE + 1))
+        return list(range(FIRST_PAGE, last_page + 1))
     pages: list[int] = []
     for chunk in spec.split(","):
         chunk = chunk.strip()
