@@ -2,10 +2,12 @@
 
 ## What this is
 
-A scraper that collects **Minnesota licensed home care providers who have NO
-website**, from the state's public Aging and Disability Resources (ADRS)
-directory. The output is a prospecting shortlist: providers who might need a
-website built.
+A lead engine that finds **businesses with NO website**, so Abdul can sell them
+one. The output is a prospecting shortlist.
+
+Source #1 is the Minnesota Aging and Disability Resources (ADRS) directory.
+Home care is vertical #1, not the whole point -- the category is a flag, and the
+same code works for every other category in that directory.
 
 Owner: Abdul (abdirahman). Goal is a workable call list, metro first.
 
@@ -14,8 +16,18 @@ Owner: Abdul (abdirahman). Goal is a workable call list, metro first.
 Server-rendered HTML, pages 1-48:
 
 ```
-https://mn.gov/adresources/search/?query=LT-2800.3000&query_label=Home+Health+Aide+Services&query_type=taxonomy&page=N
+https://mn.gov/adresources/search/?query=<taxonomy>&query_label=<label>&query_type=taxonomy&page=N
 ```
+
+Vertical #1 is `LT-2800.3000` / "Home Health Aide Services", pages 1-48. Other
+categories use the same markup, so a new taxonomy code is a new lead list with
+no new parsing code:
+
+```bash
+python3 scrape_mn_homecare.py --taxonomy <code> --label "<Category Name>"
+```
+
+Get codes from the directory's own category links. **Never guess a code.**
 
 Each result card holds: provider name (linking to a detail page at
 `/adresources/search/<uuid>/`), licence type (Basic / Comprehensive Home Care
@@ -85,8 +97,9 @@ quietly fix it and report success.**
 - 1 second between requests. Normal browser User-Agent.
 - Retry a failed page 3x with backoff; log a page that still fails, never crash.
 - Dedupe by detail-page UUID — providers repeat across pages.
-- Write `all-providers.csv` (everything) and `no-website-leads.csv`
-  (`has_website=false` only, **sorted by city** so the Twin Cities metro is first).
+- Write `<slug>-all.csv` (everything) and `<slug>-no-website-leads.csv`
+  (`has_website=false` only, **sorted by city** so the Twin Cities metro is
+  first), where `<slug>` comes from the category label.
 - Print a summary: total found, how many had no website, and a per-city
   breakdown for the top 15 cities.
 
